@@ -89,13 +89,26 @@ jobs:
       - name: Download iOS SDK
         if: steps.SDK.outputs.cache-hit != 'true'
         run: |
-          # Only download the specific SDK version
+          # Download requested SDK version, or fall back to the latest available SDK
           git clone -n --depth=1 --filter=tree:0 https://github.com/aricloverEXTRA/sdks/
           cd sdks
-          git sparse-checkout set --no-cone iPhoneOS${{ inputs.sdk_version }}.sdk
+          REQUESTED_SDK="iPhoneOS${{ inputs.sdk_version }}.sdk"
+          SELECTED_SDK="$REQUESTED_SDK"
+          if ! git ls-tree --name-only -d HEAD "$REQUESTED_SDK" | grep -qx "$REQUESTED_SDK"; then
+            SELECTED_SDK="$(git ls-tree --name-only -d HEAD | grep '^iPhoneOS.*[.]sdk$' | sort -V | tail -n1)"
+            if [ -z "$SELECTED_SDK" ]; then
+              echo "::error::No iPhoneOS SDKs were found in aricloverEXTRA/sdks."
+              exit 1
+            fi
+            echo "::warning::Requested SDK '$REQUESTED_SDK' was not found. Falling back to '$SELECTED_SDK'."
+          fi
+          git sparse-checkout set --no-cone "$SELECTED_SDK"
           git checkout
-          mkdir -p $THEOS/sdks
-          mv *.sdk $THEOS/sdks
+          mkdir -p "$THEOS/sdks"
+          mv "$SELECTED_SDK" "$THEOS/sdks/"
+          SDK_VERSION="${SELECTED_SDK#iPhoneOS}"
+          SDK_VERSION="${SDK_VERSION%.sdk}"
+          echo "SDK_VERSION=$SDK_VERSION" >> "$GITHUB_ENV"
         env:
           THEOS: ${{ github.workspace }}/theos
 
@@ -176,8 +189,8 @@ jobs:
           sed -i '' "s/^BUNDLE_ID.*$/BUNDLE_ID = ${{ env.BUNDLE_ID }}/" Makefile
           sed -i '' "s/^DISPLAY_NAME.*$/DISPLAY_NAME = ${{ env.APP_NAME }}/" Makefile
           sed -i '' "s/^PACKAGE_VERSION.*$/PACKAGE_VERSION = ${{ env.YT_VERSION }}-${{ env.YTLITE_VERSION }}/" Makefile
-          sed -i '' "s/^export TARGET.*$/export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0/" Makefile
-          sed -i '' "s/^export SDK_PATH.*$/export SDK_PATH = \$(THEOS)\/sdks\/iPhoneOS${{ inputs.sdk_version }}.sdk\//" Makefile
+          sed -i '' "s/^export TARGET.*$/export TARGET = iphone:clang:${{ env.SDK_VERSION || inputs.sdk_version }}:14.0/" Makefile
+          sed -i '' "s/^export SDK_PATH.*$/export SDK_PATH = \$(THEOS)\/sdks\/iPhoneOS${{ env.SDK_VERSION || inputs.sdk_version }}.sdk\//" Makefile
           # Build the package
           make package SIDELOAD=1 THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 YTLITE_VERSION=${{ env.YTLITE_VERSION }}
           # Rename the package based on the version
